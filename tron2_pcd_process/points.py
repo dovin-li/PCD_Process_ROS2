@@ -184,15 +184,33 @@ def read_pcd_xyz(path):
         header[key.upper()] = value.split()
 
     names = header["FIELDS"]
-    if header.get("DATA", ["ascii"])[0].lower() == "ascii":
-        raw = np.loadtxt(path, skiprows=len(header_lines), dtype=np.float64, ndmin=2)
-        idx = [names.index(k) for k in ("x", "y", "z")]
-        inten = raw[:, names.index("intensity")] if "intensity" in names else None
-        return raw[:, idx].astype(np.float32), inten
-
     sizes = [int(s) for s in header["SIZE"]]
-    types = header["TYPE"]
+    types = [value.upper() for value in header["TYPE"]]
     counts = [int(c) for c in header.get("COUNT", ["1"] * len(names))]
+    if not (len(names) == len(sizes) == len(types) == len(counts)):
+        raise ValueError(f"{path}: FIELDS/SIZE/TYPE/COUNT lengths differ")
+    if not {"x", "y", "z"}.issubset(names):
+        raise ValueError(f"{path}: PCD must contain x, y and z fields")
+    if any(count < 1 for count in counts):
+        raise ValueError(f"{path}: PCD field COUNT must be positive")
+    if any(counts[names.index(name)] != 1 for name in ("x", "y", "z")):
+        raise ValueError(f"{path}: PCD x, y and z fields must have COUNT 1")
+
+    data_format = header.get("DATA", ["ascii"])[0].lower()
+    component_offsets = np.cumsum([0] + counts[:-1]).tolist()
+    column = dict(zip(names, component_offsets))
+    if data_format == "ascii":
+        raw = np.loadtxt(path, skiprows=len(header_lines), dtype=np.float64, ndmin=2)
+        expected_columns = sum(counts)
+        if raw.shape[1] != expected_columns:
+            raise ValueError(
+                f"{path}: ASCII PCD has {raw.shape[1]} columns, expected {expected_columns}")
+        idx = [column[name] for name in ("x", "y", "z")]
+        inten = raw[:, column["intensity"]] if "intensity" in names else None
+        return raw[:, idx].astype(np.float32), inten
+    if data_format != "binary":
+        raise ValueError(f"{path}: unsupported PCD DATA format {data_format!r}")
+
     if "POINTS" in header:
         npts = int(header["POINTS"][0])
     else:
@@ -201,10 +219,20 @@ def read_pcd_xyz(path):
     for size, count in zip(sizes, counts):
         offsets.append(offset)
         offset += size * count
-    formats = {"F": "<f4", "I": "<i4", "U": "<u4"}
+    formats = {
+        ("F", 2): "<f2", ("F", 4): "<f4", ("F", 8): "<f8",
+        ("I", 1): "i1", ("I", 2): "<i2", ("I", 4): "<i4", ("I", 8): "<i8",
+        ("U", 1): "u1", ("U", 2): "<u2", ("U", 4): "<u4", ("U", 8): "<u8",
+    }
+    field_formats = []
+    for name, type_code, size, count in zip(names, types, sizes, counts):
+        base = formats.get((type_code, size))
+        if base is None:
+            raise ValueError(f"{path}: unsupported PCD field {name}: TYPE {type_code} SIZE {size}")
+        field_formats.append(base if count == 1 else (base, (count,)))
     dtype = np.dtype({
         "names": names,
-        "formats": [formats[t.upper()] for t in types],
+        "formats": field_formats,
         "offsets": offsets,
         "itemsize": offset,
     })

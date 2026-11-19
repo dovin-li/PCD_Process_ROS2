@@ -28,13 +28,17 @@ def _locate() -> Path:
     try:
         return _tools_dir()
     except Exception:  # noqa: BLE001 - 没有 ament 就走源码路径
+        # 普通 pip/venv 安装的数据文件位于 <sys.prefix>/share/...，不经过 ament 索引。
+        installed = Path(sys.prefix) / "share" / "tron2_pcd_process" / "tools"
+        if (installed / "ros1_to_ros2_bag.py").is_file():
+            return installed
         here = Path(__file__).resolve()
         # 源码布局：<pkg>/tron2_pcd_process/ros1_to_ros2.py → <pkg>/tools/
         candidate = here.parent.parent / "tools"
         if (candidate / "ros1_to_ros2_bag.py").is_file():
             return candidate
         raise SystemExit(
-            f"找不到转换器脚本：{candidate}\n"
+            f"找不到转换器脚本：{installed} 或 {candidate}\n"
             "请确认 package 安装完整，或直接从源码运行 tools/ros1_to_ros2_bag.py")
 
 

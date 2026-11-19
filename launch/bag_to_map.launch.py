@@ -11,12 +11,17 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
     args = [
         DeclareLaunchArgument("bag", description="ROS2 bag 目录或 .db3 文件"),
         DeclareLaunchArgument("out_dir", description="输出目录"),
+        DeclareLaunchArgument("raw_poses", default_value="", description="回环前的关键帧 TUM 文件"),
+        DeclareLaunchArgument("pgo_poses", default_value="", description="优化后的关键帧 TUM 文件"),
+        DeclareLaunchArgument("pose_time_source", default_value="header", choices=["header", "bag"]),
+        DeclareLaunchArgument("pcd_only", default_value="false", description="导出静态 PCD 供人工编辑"),
         DeclareLaunchArgument("force", default_value="false",
                              description="跳过轨迹体检（里程计发散也出图）"),
         DeclareLaunchArgument("overwrite", default_value="false"),
@@ -34,6 +39,10 @@ def generate_launch_description() -> LaunchDescription:
     params = {
         "bag": LaunchConfiguration("bag"),
         "out_dir": LaunchConfiguration("out_dir"),
+        "raw_poses": ParameterValue(LaunchConfiguration("raw_poses"), value_type=str),
+        "pgo_poses": ParameterValue(LaunchConfiguration("pgo_poses"), value_type=str),
+        "pose_time_source": LaunchConfiguration("pose_time_source"),
+        "pcd_only": LaunchConfiguration("pcd_only"),
         "force": LaunchConfiguration("force"),
         "overwrite": LaunchConfiguration("overwrite"),
         "odom_topic": LaunchConfiguration("odom_topic"),

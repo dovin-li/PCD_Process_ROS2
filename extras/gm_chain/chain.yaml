@@ -1,0 +1,65 @@
+# grid_map 官方插件链：高程 → 法向量 → 坡度 → 平滑 → 粗糙度 → 台阶 → 通行代价
+# 坡度/台阶/粗糙度全部由 grid_map 的官方滤波器计算，不自写拟合。
+gm_chain:
+  ros__parameters:
+    filters:
+      filter1:
+        name: inpaint
+        type: gridMapCv/InpaintFilter
+        params:
+          input_layer: elevation
+          output_layer: elevation_inpainted
+          radius: 0.30
+      filter2:
+        name: surface_normals
+        type: gridMapFilters/NormalVectorsFilter
+        params:
+          input_layer: elevation_inpainted
+          output_layers_prefix: normal_vectors_
+          radius: 0.75
+          normal_vector_positive_axis: z
+      filter3:
+        name: slope
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: slope
+          expression: acos(normal_vectors_z)
+      filter4:
+        name: mean_in_radius
+        type: gridMapFilters/MeanInRadiusFilter
+        params:
+          input_layer: elevation_inpainted
+          output_layer: elevation_smooth
+          radius: 0.75
+      filter5:
+        name: roughness
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: roughness
+          expression: abs(elevation_inpainted - elevation_smooth)
+      filter6:
+        name: min_elev_small
+        type: gridMapFilters/MinInRadiusFilter
+        params:
+          input_layer: elevation_inpainted
+          output_layer: min_elev_small
+          radius: 0.20
+      filter7:
+        name: step
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: step
+          expression: elevation_inpainted - min_elev_small
+      filter8:
+        name: min_elev_large
+        type: gridMapFilters/MinInRadiusFilter
+        params:
+          input_layer: elevation_inpainted
+          output_layer: min_elev_large
+          radius: 0.60
+      filter9:
+        name: step_large
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: step_large
+          expression: elevation_inpainted - min_elev_large

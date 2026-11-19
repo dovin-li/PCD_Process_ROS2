@@ -1,0 +1,6 @@
+# GTSAM 4.2 Python wheels require NumPy 1.x on the validated Mac environment.
+numpy>=1.23,<2
+open3d>=0.18,<1
+gtsam>=4.2,<4.3
+# Only the optional ROS1 bag entry point imports rosbags.
+rosbags>=0.10,<1

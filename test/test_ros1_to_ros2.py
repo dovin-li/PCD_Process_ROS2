@@ -186,8 +186,22 @@ def test_console_script_wrapper_resolves_tools():
     assert (tools / "ros1_ros2_serde.py").is_file()
 
 
+def test_console_script_wrapper_resolves_pip_share_layout():
+    import tempfile
+    from unittest.mock import patch
+
+    from tron2_pcd_process import ros1_to_ros2
+
+    with tempfile.TemporaryDirectory() as directory:
+        tools = Path(directory) / "share" / "tron2_pcd_process" / "tools"
+        tools.mkdir(parents=True)
+        (tools / "ros1_to_ros2_bag.py").write_text("# fixture\n")
+        with patch.object(sys, "prefix", directory):
+            assert ros1_to_ros2._locate() == tools
+
+
 def test_all_console_scripts_resolve():
-    """三个 console_scripts 都要能定位到真实的 main。"""
+    """六个 console_scripts 都要能定位到真实的 main。"""
     import importlib
 
     from setuptools import find_packages  # noqa: F401  (仅确认环境)
@@ -204,9 +218,9 @@ def test_all_console_scripts_resolve():
             continue
         spec = quoted.split(" = ", 1)[-1]
         module, _, func = spec.partition(":")
-        if module.startswith("tron2_pcd_process"):
+        if module.startswith(("tron2_pcd_process", "loop_closure", "terrain_tools")):
             targets.append((module, func))
-    assert len(targets) >= 3, f"setup.py 里只找到 {targets}"
+    assert len(targets) == 6, f"setup.py 里找到的入口不是 6 个：{targets}"
     for module, func in targets:
         mod = importlib.import_module(module)
         entry = getattr(mod, func, None)

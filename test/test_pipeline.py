@@ -1,7 +1,7 @@
 """核心处理链单测：不依赖 ROS，不依赖真实 bag。
 
 跑法（Mac / 机器人容器都行）：
-    cd src/tron2_pcd_process
+    cd PCD_Process_ROS2
     PYTHONPATH=. python3 -m pytest test -q          # 有 pytest
     PYTHONPATH=. python3 test/test_pipeline.py      # 没 pytest 也能跑（内置最小 runner）
 """

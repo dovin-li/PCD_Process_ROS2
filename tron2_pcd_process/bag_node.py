@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from . import projection
 from .bag_reader import iter_bag, list_topics, resolve_storage
@@ -48,11 +49,17 @@ from .pipeline import (
     resolve_min_frames,
 )
 from .points import Trajectory, write_pcd
+from .pose_correction import PoseCorrection
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--bag", required=True, help="ROS2 bag 目录或 .db3 文件")
     parser.add_argument("--out", "--out-dir", dest="out", required=True, help="输出目录")
+    parser.add_argument("--raw-poses", help="回环前的关键帧 TUM 位姿，与 --pgo-poses 配对")
+    parser.add_argument("--pgo-poses", help="优化后的同一组关键帧 TUM 位姿")
+    parser.add_argument("--pose-time-source", choices=("header", "bag"), default="header",
+                        help="关键帧 TUM 使用点云的传感器时间（header）或收包时间（bag）")
+    parser.add_argument("--pcd-only", action="store_true", help="导出保留地面的静态 PCD 与轨迹，供人工编辑")
     parser.add_argument("--force", action="store_true", help="跳过轨迹体检（发散数据也出图）")
     parser.add_argument("--overwrite", action="store_true", help="允许覆盖已存在的输出")
     parser.add_argument("--odom-topic", default=DEFAULT_CONFIG.odom_topic)
@@ -99,15 +106,25 @@ def _config_from_args(args) -> PcdProcessConfig:
 # ------------------------------------------------------------------ 主流程
 
 def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
-        overwrite: bool = False, log=print) -> dict:
+        overwrite: bool = False, log=print, *, raw_poses=None, pgo_poses=None,
+        pcd_only=False, pose_time_source="header") -> dict:
     started = time.time()
     bag_path = Path(bag).expanduser()
     files, _meta = resolve_storage(bag_path)
     if not files:
         raise SystemExit(f"{bag_path}: 不是有效的 ROS2 bag")
+    if bool(raw_poses) != bool(pgo_poses):
+        raise SystemExit("必须同时提供 --raw-poses 和 --pgo-poses")
+    if pose_time_source not in ("header", "bag"):
+        raise SystemExit("pose_time_source 必须为 header 或 bag")
+    try:
+        correction = PoseCorrection(raw_poses, pgo_poses) if raw_poses else None
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     out = Path(out).expanduser().resolve()
     expected = [out / name for name in
                 ("summary.json", "cloud_static.pcd", "map.pgm", "map.yaml")]
+    had_published_output = any(p.exists() for p in expected)
     if not overwrite:
         existing = [str(p) for p in expected if p.exists()]
         if existing:
@@ -119,6 +136,7 @@ def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
     rep = RepresentativeAccumulator(cfg.voxel_m)
     traj_rows: List[np.ndarray] = []
     frame_stamps: List[float] = []
+    correction_stamps: List[float] = []
     cloud_frames = 0
     cloud_frame_id = ""
     try:
@@ -137,16 +155,28 @@ def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
         yield first_item
         yield from rest
 
-    for key, _stamp, obj in chain(first, stream):
+    for key, bag_stamp, obj in chain(first, stream):
         if key == "odom":
+            if correction is not None and (obj.frame_id, obj.child_frame_id) != (
+                    cfg.odom_frame, cfg.odom_child_frame):
+                raise SystemExit(f"位姿修正需要 {cfg.odom_frame} → {cfg.odom_child_frame}，"
+                                 f"实际里程计坐标系为 {obj.frame_id} → {obj.child_frame_id}")
             traj_rows.append(obj.as_row())
         else:
             xyz = obj.xyz
             if cfg.max_points_per_frame:
                 xyz = xyz[:cfg.max_points_per_frame]
+            if correction is not None:
+                if obj.frame_id != cfg.cloud_frame:
+                    raise SystemExit(f"位姿修正需要 {cfg.cloud_frame} 世界系点云，"
+                                     f"实际点云坐标系为 {obj.frame_id}")
+                correction_stamp = bag_stamp if pose_time_source == "bag" else obj.stamp
+                correction_stamps.append(correction_stamp)
+                frame_stamps.append(obj.stamp)
+                rotation, offset = correction.at(correction_stamp)
+                xyz = (rotation.apply(xyz) + offset).astype(np.float32)
             cloud_frames += 1
             cloud_frame_id = cloud_frame_id or obj.frame_id
-            frame_stamps.append(obj.stamp)
             voxels.add_frame(xyz)
             rep.add_frame(xyz)
     if not traj_rows or not cloud_frames:
@@ -155,6 +185,31 @@ def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
     traj = Trajectory(np.vstack(traj_rows))
     if np.any(np.diff(traj.stamps) < 0):
         traj = Trajectory(traj.rows[np.argsort(traj.stamps, kind="stable")])
+    raw_traj = traj
+    if correction is not None:
+        times = np.asarray(correction_stamps)
+        start, end = correction.stamps[[0, -1]]
+        if times.max() < start or times.min() > end:
+            raise SystemExit("关键帧与点云时间范围没有重叠，请核对 bag、TUM 与 --pose-time-source")
+        pose_metadata = {
+            "raw_poses": str(Path(raw_poses).expanduser().resolve()),
+            "optimized_poses": str(Path(pgo_poses).expanduser().resolve()),
+            "time_source": pose_time_source, "keyframes": len(correction.stamps),
+            "frames_before_first": int(np.count_nonzero(times < start)),
+            "frames_after_last": int(np.count_nonzero(times > end)),
+        }
+        query_times = traj.stamps
+        if pose_time_source == "bag":
+            # Map each sensor stamp to the same cloud's receipt time. Using a
+            # separate odometry receipt time would introduce its transport delay.
+            order = np.argsort(frame_stamps, kind="stable")
+            query_times = np.interp(query_times, np.asarray(frame_stamps)[order],
+                                    times[order])
+        rotations, offsets = correction.at(query_times)
+        corrected_rows = traj.rows.copy()
+        corrected_rows[:, 1:4] = rotations.apply(traj.positions) + offsets
+        corrected_rows[:, 4:8] = (rotations * Rotation.from_quat(traj.orientations)).as_quat()
+        traj = Trajectory(corrected_rows)
     means = rep.means
     counts = voxels.counts
     rep_keys = rep.keys
@@ -165,31 +220,53 @@ def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
         f"体素 {len(voxels)}（frame_id={cloud_frame_id or '?'}）")
 
     # ---- 地面偏移 ----
-    if cfg.ground_offset_m is None:
+    if pcd_only:
+        ground_offset, ground_hist = None, None
+    elif cfg.ground_offset_m is None:
         ground_offset, ground_hist = estimate_ground_offset(
             means, counts, traj.positions[:, :2], traj.positions[:, 2])
         ground_source = "auto"
     else:
         ground_offset, ground_hist = float(cfg.ground_offset_m), None
         ground_source = "argument"
-    if ground_offset is None:
-        raise SystemExit("地面偏移未能自动估计；请用 --ground-offset 手工给值")
-    log(f"   地面偏移 {ground_offset:.4f} m（{ground_source}）")
+    if not pcd_only:
+        if ground_offset is None:
+            raise SystemExit("地面偏移未能自动估计；请用 --ground-offset 手工给值")
+        log(f"   地面偏移 {ground_offset:.4f} m（{ground_source}）")
 
     min_frames, threshold_mode = resolve_min_frames(counts, cfg.min_frames)
     keep = counts >= min_frames
+    static_xyz = means[keep]
+
+    # Validate everything that can invalidate the export before publishing the
+    # first file.  In particular, an overwrite attempt that fails validation
+    # must leave the previous, internally consistent generation untouched.
+    log("== 2/4 轨迹体检 ==")
+    health = traj.health(cfg.max_step_m, cfg.max_z_span_m, cfg.min_duration_s)
+    log("   " + json.dumps(health, ensure_ascii=False))
+    if not health["ok"] and not force:
+        if not had_published_output:
+            (out / "report.md").write_text(
+                "# 拒绝出图\n\n" + "\n".join(f"- {p}" for p in health["problems"]) + "\n",
+                encoding="utf-8")
+        raise SystemExit("轨迹体检未通过，已停止（加 --force 可强制出图）：\n  " +
+                         "\n  ".join(health["problems"]))
+    if not len(static_xyz):
+        raise SystemExit(f"帧计数过滤后静态体素为 0（min_frames={min_frames}），"
+                         "拒绝导出空 PCD；请检查数据或降低 --min-frames")
 
     # ---- 产物 1：PCD / TUM ----
-    log("== 2/4 写出点云与轨迹 ==")
+    log("== 3/4 写出点云与轨迹 ==")
     write_pcd(out / "cloud_voxel_all.pcd", means,
               np.clip(counts, 0, 255).astype(np.float32))
     write_pcd(out / "cloud_static.pcd", means[keep],
               np.clip(counts[keep], 0, 255).astype(np.float32))
     traj.write_tum(out / "traj_camera_init.tum")
+    if correction is not None:
+        raw_traj.write_tum(out / "traj_raw.tum")
 
     noground_stats = None
-    static_xyz = means[keep]
-    if len(static_xyz):
+    if len(static_xyz) and not pcd_only:
         try:
             from scipy.spatial import cKDTree
             tree_traj = cKDTree(traj.positions[:, :2])
@@ -204,17 +281,6 @@ def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
         except ImportError:  # pragma: no cover - scipy 是硬依赖，这里只是兜底
             noground_stats = None
 
-    # ---- 轨迹体检 ----
-    log("== 3/4 轨迹体检 ==")
-    health = traj.health(cfg.max_step_m, cfg.max_z_span_m, cfg.min_duration_s)
-    log("   " + json.dumps(health, ensure_ascii=False))
-    if not health["ok"] and not force:
-        (out / "report.md").write_text(
-            "# 拒绝出图\n\n" + "\n".join(f"- {p}" for p in health["problems"]) + "\n",
-            encoding="utf-8")
-        raise SystemExit("轨迹体检未通过，已停止（加 --force 可强制出图）：\n  " +
-                         "\n  ".join(health["problems"]))
-
     metrics = simplify_metrics(
         bag=bag_path, traj=traj, counts=counts, means_count=int(len(means)),
         cloud_frames=cloud_frames, cloud_frame_id=cloud_frame_id,
@@ -222,6 +288,30 @@ def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
         min_frames=min_frames, threshold_mode=threshold_mode, keep=keep,
         noground_stats=noground_stats, started=started,
     )
+    if correction is not None:
+        metrics["pose_correction"] = pose_metadata
+
+    if pcd_only:
+        outputs = {
+            "pcd_all": str(out / "cloud_voxel_all.pcd"),
+            "pcd_static": str(out / "cloud_static.pcd"),
+            "traj": str(out / "traj_camera_init.tum"),
+        }
+        if correction is not None:
+            outputs["traj_raw"] = str(out / "traj_raw.tum")
+        summary = {
+            "bag": str(bag_path), "out": str(out), "health": health,
+            "cloud": {"frames": cloud_frames, "voxels_total": len(means),
+                      "static_voxels": int(keep.sum())}, "outputs": outputs,
+        }
+        if correction is not None:
+            summary["pose_correction"] = pose_metadata
+        (out / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
+                                          encoding="utf-8")
+        (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+                                          encoding="utf-8")
+        log(json.dumps(summary, ensure_ascii=False, indent=2))
+        return summary
 
     # ---- 投影 ----
     log("== 4/4 投影 2D 地图 ==")
@@ -277,6 +367,9 @@ def run(bag, out, cfg: PcdProcessConfig, force: bool = False,
         },
         "elapsed_s": round(time.time() - started, 1),
     }
+    if correction is not None:
+        summary["pose_correction"] = pose_metadata
+        summary["outputs"]["traj_raw"] = str(out / "traj_raw.tum")
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
                                       encoding="utf-8")
     (out / "report.md").write_text(
@@ -312,7 +405,8 @@ def simplify_metrics(**kwargs) -> dict:
         "trajectory_z_span_m": round(float(np.ptp(traj.positions[:, 2])), 3),
         "voxel_m": cfg.voxel_m,
         "voxels_total": int(kwargs["means_count"]),
-        "ground_offset_m": round(float(kwargs["ground_offset"]), 4),
+        "ground_offset_m": (round(float(kwargs["ground_offset"]), 4)
+                            if kwargs["ground_offset"] is not None else None),
         "ground_histogram": kwargs["ground_hist"],
         "frame_count_percentiles": frame_count_percentiles(counts),
         "frame_count_max": int(counts.max()) if len(counts) else 0,
@@ -326,6 +420,10 @@ def simplify_metrics(**kwargs) -> dict:
 
 
 # ------------------------------------------------------------------ 入口
+
+OFFLINE_POSE_PARAMS = {"raw_poses": "", "pgo_poses": "", "pose_time_source": "header",
+                       "pcd_only": False}
+
 
 class PcdProcessBagNode:
     """ROS2 包装：参数来自 ROS 参数表，跑完一次即 shutdown。
@@ -345,6 +443,8 @@ class PcdProcessBagNode:
         self.node.declare_parameter("out_dir", "")
         self.node.declare_parameter("force", False)
         self.node.declare_parameter("overwrite", False)
+        for name, default in OFFLINE_POSE_PARAMS.items():
+            self.node.declare_parameter(name, default)
         seen = {"bag", "out_dir", "force", "overwrite"}   # 已声明过，不能重复声明
         for name, value in defaults.items():
             if name not in seen:
@@ -380,6 +480,7 @@ class PcdProcessBagNode:
         cfg = PcdProcessConfig.from_params(params)
         force = bool(self.node.get_parameter("force").value)
         overwrite = bool(self.node.get_parameter("overwrite").value)
+        pose_params = {name: self.node.get_parameter(name).value for name in OFFLINE_POSE_PARAMS}
         try:
             cfg.validate()
         except ValueError as exc:
@@ -387,7 +488,7 @@ class PcdProcessBagNode:
             return 2
         log = lambda msg: self.node.get_logger().info(str(msg))  # noqa: E731
         try:
-            run(bag, out, cfg, force=force, overwrite=overwrite, log=log)
+            run(bag, out, cfg, force=force, overwrite=overwrite, log=log, **pose_params)
         except SystemExit as exc:
             self.node.get_logger().error(str(exc))
             return 1
@@ -427,8 +528,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser = _add_common_args(argparse.ArgumentParser(description=__doc__))
     args = parser.parse_args(argv)
+    if bool(args.raw_poses) != bool(args.pgo_poses):
+        parser.error("必须同时提供 --raw-poses 和 --pgo-poses")
     cfg = _config_from_args(args)
-    run(args.bag, args.out, cfg, force=args.force, overwrite=args.overwrite)
+    run(args.bag, args.out, cfg, force=args.force, overwrite=args.overwrite,
+        raw_poses=args.raw_poses, pgo_poses=args.pgo_poses, pcd_only=args.pcd_only,
+        pose_time_source=args.pose_time_source)
     return 0
 
 

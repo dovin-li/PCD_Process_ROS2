@@ -2,14 +2,13 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>tron2_pcd_process</name>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <description>
-    ROS2 版 PCD Process：把 FAST-LIO 的 world 系点云 + 位姿处理成静态点云 PCD 与 2D 占据栅格地图。
-    核心处理层是纯 Python（numpy/scipy），不 import rclpy；离线节点直读 ROS2 bag，
-    在线节点订阅话题边建图边出图。取代 ROS1 版 ~/Desktop/测试/point_process。
+    Standalone ROS2 PCD processing: dynamic-ghost filtering, offline loop closure,
+    editable XYZI PCD export, elevation grid and Nav2 cost-map generation.
   </description>
   <maintainer email="dovin.lee@example.com">Dovin Li</maintainer>
-  <license>Proprietary</license>
+  <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
@@ -18,11 +17,16 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros2bag</exec_depend>
   <exec_depend>rosbag2_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-pip</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
