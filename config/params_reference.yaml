@@ -1,0 +1,49 @@
+"""参数速查：运行时改哪几个、默认值从哪来。
+
+本文件**只做索引**，权威默认值在 `tron2_pcd_process/config.py` 的
+`PcdProcessConfig`；两边不一致时以 Python 代码为准（并请同步本文件）。
+
+改参数三种方式（优先级从低到高）：
+
+1. 改 `config.py` 的 dataclass 默认值 —— 影响所有入口，需同步 README
+2. 命令行：`--voxel 0.05 --min-frames 3 --height-low 0.10 ...`
+3. ROS2 参数：`ros2 run tron2_pcd_process pcd_process_bag --ros-args -p voxel_m:=0.05 ...`
+
+注意 ROS 参数名与命令行名不完全相同（ROS 参数就是 dataclass 字段名）：
+
+| 含义 | 命令行 | ROS 参数 | 默认 |
+|---|---|---|---|
+| 体素粒度 | `--voxel` | `voxel_m` | 0.05 |
+| 帧数阈值 | `--min-frames` | `min_frames` | 3（0=Otsu 自动，钳 2..4） |
+| 地面偏移 | `--ground-offset` | `ground_offset_m` | 自动估计 |
+| 栅格分辨率 | `--resolution` | `resolution_m` | 0.05 |
+| 障碍窗下沿 | `--height-low` | `height_low_m` | 0.10 |
+| 障碍窗上沿 | `--height-high` | `height_high_m` | 1.00 |
+| 轨迹距离门限 | `--max-route-distance` | `max_route_distance_m` | 8.0 |
+| 输入话题 | `--odom-topic` | `odom_topic` | /Odometry |
+| 点云话题 | `--cloud-topic` | `cloud_topic` | /cloud_registered |
+
+# ------------------------------------------------------------------
+# 现场最常见的两件事
+# ------------------------------------------------------------------
+
+# 1) 人体重影没去干净 → 降 min_frames 会放进更多点，**不能**解决问题；
+#    正确做法是确认这三条都满足：
+#      /cloud_registered 的 frame_id == camera_init（不是 body）
+#      dense_publish_en: true（FAST-LIO 侧，false 时点云被抽稀）
+#      录制期间无长时间静止的人
+#    确实要强行过滤，可把 min_frames 提到 4~5（代价：矮结构会丢）。
+
+# 2) 地图上机器人的路被标成障碍 → 多半是地面基准不对：
+#    先看 report.md 里的 ground_offset，本项目实测约 1.17~1.18 m；
+#    若明显偏离（<0.9 或 >1.4），显式指定：
+#      --ground-offset 1.179
+
+# ------------------------------------------------------------------
+# 在线节点专用
+# ------------------------------------------------------------------
+#  ground_estimate_min_poses   1000    攒够多少位姿后才估地面偏移（估出即冻结）
+#  ground_estimate_min_voxels  300000  同上，体素数门槛
+#  max_traj_poses              200000  轨迹上限，超过后等距抽稀
+#  update_period_s             10.0    统计话题发布周期
+#  save_on_shutdown            true    退出时自动出图落盘
