@@ -9,6 +9,9 @@
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, Mapping, Optional
 
+AUTO_MIN_FRAMES = 0
+MAX_EXPLICIT_MIN_FRAMES = 10
+
 
 @dataclass(frozen=True)
 class PcdProcessConfig:
@@ -17,7 +20,11 @@ class PcdProcessConfig:
     """体素去重粒度，与 2D 图分辨率一致。"""
 
     min_frames: int = 3
-    """同一体素至少被几帧观测才保留。2=细节多但杂，4=干净但丢矮结构。0=Otsu 自动（钳 2~4）。"""
+    """同一体素至少被几帧观测才保留。
+
+    手动范围 1~10，默认 3；0=Otsu 自动（钳 2~4）。1 不过滤短时动态点；
+    阈值越高越干净，也越可能丢弱结构。
+    """
 
     max_points_per_frame: int = 0
     """每帧最多取多少点（0=不限），仅在线节点限内存用。"""
@@ -101,8 +108,10 @@ class PcdProcessConfig:
     def validate(self) -> None:
         if self.voxel_m <= 0 or self.resolution_m <= 0:
             raise ValueError("voxel_m / resolution_m must be > 0")
-        if self.min_frames < 0:
-            raise ValueError("min_frames must be >= 0")
+        is_integer = int(self.min_frames) == self.min_frames
+        if (not is_integer or
+                not (AUTO_MIN_FRAMES <= self.min_frames <= MAX_EXPLICIT_MIN_FRAMES)):
+            raise ValueError("min_frames must be 0 (auto) or between 1 and 10")
         if not (self.height_low_m < self.height_high_m):
             raise ValueError("height_low_m must be < height_high_m")
         if self.segment_length_m <= 0 or self.segment_z_span_m <= 0:

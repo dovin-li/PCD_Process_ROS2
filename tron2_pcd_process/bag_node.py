@@ -65,7 +65,10 @@ def _add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     parser.add_argument("--odom-topic", default=DEFAULT_CONFIG.odom_topic)
     parser.add_argument("--cloud-topic", default=DEFAULT_CONFIG.cloud_topic)
     parser.add_argument("--voxel", type=float, default=DEFAULT_CONFIG.voxel_m)
-    parser.add_argument("--min-frames", type=int, default=DEFAULT_CONFIG.min_frames)
+    parser.add_argument(
+        "--min-frames", type=int, default=DEFAULT_CONFIG.min_frames,
+        help="帧数过滤阈值：1..10 手动设置，0=Otsu 自动（钳 2..4）；默认 3",
+    )
     parser.add_argument("--ground-offset", type=float, default=None,
                         help="雷达光心到地面高度；省略则自动估计")
     parser.add_argument("--resolution", type=float, default=DEFAULT_CONFIG.resolution_m)

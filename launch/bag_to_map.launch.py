@@ -28,7 +28,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("odom_topic", default_value="/Odometry"),
         DeclareLaunchArgument("cloud_topic", default_value="/cloud_registered"),
         DeclareLaunchArgument("voxel_m", default_value="0.05"),
-        DeclareLaunchArgument("min_frames", default_value="3"),
+        DeclareLaunchArgument(
+            "min_frames", default_value="3",
+            description="帧数过滤阈值：1..10 手动设置，0=Otsu 自动（钳 2..4）",
+        ),
         DeclareLaunchArgument("ground_offset_m", default_value=""),
         DeclareLaunchArgument("height_low_m", default_value="0.10"),
         DeclareLaunchArgument("height_high_m", default_value="1.00"),

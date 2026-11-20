@@ -24,7 +24,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("update_period_s", default_value="10.0"),
         DeclareLaunchArgument("save_on_shutdown", default_value="true"),
         DeclareLaunchArgument("voxel_m", default_value="0.05"),
-        DeclareLaunchArgument("min_frames", default_value="3"),
+        DeclareLaunchArgument(
+            "min_frames", default_value="3",
+            description="帧数过滤阈值：1..10 手动设置，0=Otsu 自动（钳 2..4）",
+        ),
         DeclareLaunchArgument("height_low_m", default_value="0.10"),
         DeclareLaunchArgument("height_high_m", default_value="1.00"),
         DeclareLaunchArgument("resolution_m", default_value="0.05"),

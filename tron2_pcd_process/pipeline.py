@@ -7,12 +7,14 @@
     estimate_ground_offset  —— 轨迹附近点的相对高度主峰 → 雷达光心到地面高度
     otsu_threshold          —— 帧数两类分割（min_frames=0 时自动）
 
-动态去除的机制没变：同一 0.05 m 体素出现在 ≥3 帧才算结构，人走过留下的
-重影只出现 1~2 帧，整批剔除。不需要 ROS，也不需要回环位姿。
+动态去除默认要求同一 0.05 m 体素出现在 ≥3 帧；手动阈值可设为 1~10，
+0 使用 Otsu 自动（钳到 2~4）。不需要 ROS，也不需要回环位姿。
 """
 
 import numpy as np
 from typing import Dict, List
+
+from .config import AUTO_MIN_FRAMES, MAX_EXPLICIT_MIN_FRAMES
 
 SPAN = 20000
 """体素整数网格单轴偏移，坐标范围 ±SPAN*resolution（0.05 m 时 ±1000 km）。"""
@@ -261,12 +263,16 @@ def otsu_threshold(values, lo=2, hi=40):
 
 
 def resolve_min_frames(counts, configured: int):
-    """min_frames>0 用显式值；0 走 Otsu 并钳到 2~4。
+    """min_frames=1..10 用显式值；0 走 Otsu 并钳到 2~4。
 
     Otsu 在"低帧数占多数"的长跑数据上会偏高（实测 5 分钟趟给出 13，
     把弱结构也删了），因此钳到 2~4。
     """
-    if configured > 0:
+    is_integer = int(configured) == configured
+    if (not is_integer or
+            not (AUTO_MIN_FRAMES <= configured <= MAX_EXPLICIT_MIN_FRAMES)):
+        raise ValueError("min_frames must be 0 (auto) or between 1 and 10")
+    if configured > AUTO_MIN_FRAMES:
         return int(configured), "explicit"
     auto = otsu_threshold(counts)
     min_frames = int(min(max(2, round(auto)), 4))

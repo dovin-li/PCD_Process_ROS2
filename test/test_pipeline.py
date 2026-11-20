@@ -155,6 +155,20 @@ def test_resolve_min_frames_clamps_auto_threshold():
     assert resolve_min_frames(counts, 5) == (5, "explicit")
 
 
+def test_resolve_min_frames_accepts_explicit_range_1_to_10():
+    counts = np.array([1, 2, 3, 10])
+    for configured in range(1, 11):
+        assert resolve_min_frames(counts, configured) == (configured, "explicit")
+
+    for configured in (-1, 11, 1.5):
+        try:
+            resolve_min_frames(counts, configured)
+        except ValueError as exc:
+            assert "min_frames" in str(exc)
+        else:
+            raise AssertionError(f"min_frames={configured} 必须报错")
+
+
 def test_otsu_separates_two_populations():
     """双峰分布：阈值应落在两峰之间。
 
@@ -212,6 +226,19 @@ def test_config_validation_rejects_bad_height_window():
     except ValueError:
         return
     raise AssertionError("height_low > height_high 必须报错")
+
+
+def test_config_validation_accepts_auto_and_explicit_frame_range():
+    for configured in range(0, 11):
+        PcdProcessConfig(min_frames=configured).validate()
+
+    for configured in (-1, 11, 1.5):
+        try:
+            PcdProcessConfig(min_frames=configured).validate()
+        except ValueError as exc:
+            assert "min_frames" in str(exc)
+        else:
+            raise AssertionError(f"min_frames={configured} 必须报错")
 
 
 def test_config_from_params_ignores_unknown_and_none():
